@@ -200,8 +200,12 @@ function populateModelSelect(models, defaultModel = null, provider = 'ollama') {
         models.forEach(model => {
             const option = document.createElement('option');
             option.value = model.name;
-            option.textContent = `${model.displayName || model.name} - ${model.description || ''}`;
-            option.title = `Input: ${model.inputTokenLimit || 'N/A'} tokens, Output: ${model.outputTokenLimit || 'N/A'} tokens`;
+            option.textContent = model.displayName || model.name;
+            // Full description in tooltip
+            let tooltip = [];
+            if (model.description) tooltip.push(model.description);
+            tooltip.push(`Input: ${model.inputTokenLimit || 'N/A'} tokens, Output: ${model.outputTokenLimit || 'N/A'} tokens`);
+            option.title = tooltip.join(' | ');
             if (model.name === defaultModel) {
                 option.selected = true;
                 defaultModelFound = true;

@@ -1583,6 +1583,8 @@ html.dark .file-info {
     border: none;
     cursor: pointer;
     width: 100%;
+    min-width: 0;
+    overflow: hidden;
     min-height: 44px;
     transition: background 0.2s;
 }
