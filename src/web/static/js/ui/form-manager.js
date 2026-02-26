@@ -383,13 +383,18 @@ export const FormManager = {
         try {
             const config = await ApiClient.getConfig();
 
+            // Store config in state first so other modules can access it
+            StateManager.setState('ui.defaultConfig', config);
+
             // Set target language from server config if available
             // This fixes GitHub issue #108: DEFAULT_TARGET_LANGUAGE was ignored
             // Only override if server has a default target language configured
             if (config.default_target_language && config.default_target_language.trim()) {
+                console.log('[FormManager] Applying DEFAULT_TARGET_LANGUAGE from server:', config.default_target_language);
                 setDefaultLanguage('targetLang', 'customTargetLang', config.default_target_language);
+            } else {
+                console.log('[FormManager] No DEFAULT_TARGET_LANGUAGE from server, keeping current value');
             }
-            // If no server default, keep the value from SettingsManager (localStorage) or browser default
 
             // Set source language from server config if available
             const sourceLanguage = config.default_source_language && config.default_source_language.trim()
@@ -441,16 +446,15 @@ export const FormManager = {
             ApiKeyUtils.setupField('deepseekApiKey', config.deepseek_api_key_configured, config.deepseek_api_key);
             ApiKeyUtils.setupField('poeApiKey', config.poe_api_key_configured, config.poe_api_key);
 
-            // Store in state
-            StateManager.setState('ui.defaultConfig', config);
-
-            // After loading defaults, dispatch event to sync any pending file languages
-            // This ensures restored file languages override browser-detected defaults
+            // After loading defaults, dispatch event to notify other modules
+            console.log('[FormManager] Default config loaded, dispatching event');
             window.dispatchEvent(new CustomEvent('defaultConfigLoaded'));
 
-        } catch {
+        } catch (error) {
+            console.error('[FormManager] Failed to load default configuration:', error);
             MessageLogger.showMessage('Failed to load default configuration', 'warning');
-            // Still dispatch event even on error so file languages can be synced
+            // Still dispatch event even on error so other modules aren't blocked
+            console.log('[FormManager] Dispatching defaultConfigLoaded event despite error');
             window.dispatchEvent(new CustomEvent('defaultConfigLoaded'));
         }
     },

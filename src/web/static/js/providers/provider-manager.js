@@ -372,11 +372,19 @@ export const ProviderManager = {
         // localhost instead of the configured remote server.
         this.toggleProviderSettings(false);
 
-        // Listen for server config to be loaded, THEN load models with correct endpoint
-        window.addEventListener('defaultConfigLoaded', () => {
-            console.log('[ProviderManager] Server config loaded, now loading models with correct endpoint');
+        // Check if config is already loaded (race condition fix)
+        const serverConfig = StateManager.getState('ui.defaultConfig');
+        if (serverConfig) {
+            console.log('[ProviderManager] Config already loaded, loading models immediately');
             this.toggleProviderSettings(true);
-        }, { once: true });
+        } else {
+            // Listen for server config to be loaded, THEN load models with correct endpoint
+            console.log('[ProviderManager] Waiting for defaultConfigLoaded event');
+            window.addEventListener('defaultConfigLoaded', () => {
+                console.log('[ProviderManager] Server config loaded, now loading models with correct endpoint');
+                this.toggleProviderSettings(true);
+            }, { once: true });
+        }
     },
 
     /**
