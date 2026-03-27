@@ -775,84 +775,131 @@ async def _make_refinement_request(
     Returns:
         Tuple of (refined_text or None, LLMResponse)
     """
-    try:
-        # Extract refinement instructions from prompt_options
-        refinement_instructions = prompt_options.get('refinement_instructions', '') if prompt_options else ''
+    # Extract refinement instructions from prompt_options
+    refinement_instructions = prompt_options.get('refinement_instructions', '') if prompt_options else ''
 
-        # Generate refinement prompts
-        prompt_pair = generate_refinement_prompt(
-            draft_translation=draft_translation,
-            context_before=context_before,
-            context_after=context_after,
-            previous_refined_context=previous_refined_context,
-            target_language=target_language,
-            has_placeholders=False,
-            prompt_options=prompt_options,
-            additional_instructions=refinement_instructions
-        )
+    # Generate refinement prompts
+    prompt_pair = generate_refinement_prompt(
+        draft_translation=draft_translation,
+        context_before=context_before,
+        context_after=context_after,
+        previous_refined_context=previous_refined_context,
+        target_language=target_language,
+        has_placeholders=False,
+        prompt_options=prompt_options,
+        additional_instructions=refinement_instructions
+    )
 
-        # Log the request
-        if log_callback:
-            log_callback("refinement_request", "Sending refinement request to LLM", data={
-                'type': 'refinement_request',
-                'system_prompt': prompt_pair.system,
-                'user_prompt': prompt_pair.user,
-                'model': model
-            })
+    client = llm_client or default_client
+    last_response: Optional[LLMResponse] = None
 
-        start_time = time.time()
-        client = llm_client or default_client
+    # Retry loop with adaptive context (mirrors translation logic)
+    while True:
+        try:
+            # Log the request
+            if log_callback:
+                log_callback("refinement_request", "Sending refinement request to LLM", data={
+                    'type': 'refinement_request',
+                    'system_prompt': prompt_pair.system,
+                    'user_prompt': prompt_pair.user,
+                    'model': model
+                })
 
-        # Set context from manager if available
-        if context_manager and hasattr(client, 'context_window'):
-            new_ctx = context_manager.get_context_size()
-            if client.context_window != new_ctx:
-                client.context_window = new_ctx
+            start_time = time.time()
 
-        llm_response = await client.make_request(
-            prompt_pair.user, model, system_prompt=prompt_pair.system
-        )
-        execution_time = time.time() - start_time
+            # Set context from manager if available
+            if context_manager and hasattr(client, 'context_window'):
+                new_ctx = context_manager.get_context_size()
+                if client.context_window != new_ctx:
+                    if log_callback:
+                        log_callback("context_update",
+                            f"📐 Refinement context window: {client.context_window} → {new_ctx}")
+                    client.context_window = new_ctx
 
-        if not llm_response:
-            return None, None
+            llm_response = await client.make_request(
+                prompt_pair.user, model, system_prompt=prompt_pair.system
+            )
+            execution_time = time.time() - start_time
 
-        full_raw_response = llm_response.content
+            if not llm_response:
+                return None, None
 
-        # Log the response
-        if log_callback:
-            log_callback("refinement_response", "Refinement response received", data={
-                'type': 'refinement_response',
-                'response': full_raw_response,
-                'execution_time': execution_time,
-                'model': model,
-                'tokens': {
-                    'prompt': llm_response.prompt_tokens,
-                    'completion': llm_response.completion_tokens,
-                    'total': llm_response.context_used,
-                    'limit': llm_response.context_limit
-                }
-            })
+            last_response = llm_response
 
-        # Extract refined text
-        refined_text = client.extract_translation(full_raw_response)
+            # Check if we should retry with larger context (adaptive strategy)
+            if context_manager and llm_response.was_truncated:
+                if context_manager.should_retry_with_larger_context(
+                    llm_response.was_truncated, llm_response.context_used
+                ):
+                    context_manager.increase_context()
+                    continue  # Retry with larger context
 
-        if refined_text:
-            return refined_text, llm_response
-        else:
-            # Fallback to raw response if no tags found
-            if draft_translation not in full_raw_response:
-                return full_raw_response.strip(), llm_response
+            full_raw_response = llm_response.content
+
+            # Log the response
+            if log_callback:
+                log_callback("refinement_response", "Refinement response received", data={
+                    'type': 'refinement_response',
+                    'response': full_raw_response,
+                    'execution_time': execution_time,
+                    'model': model,
+                    'tokens': {
+                        'prompt': llm_response.prompt_tokens,
+                        'completion': llm_response.completion_tokens,
+                        'total': llm_response.context_used,
+                        'limit': llm_response.context_limit
+                    }
+                })
+
+            # Extract refined text
+            refined_text = client.extract_translation(full_raw_response)
+
+            if refined_text:
+                return refined_text, llm_response
             else:
-                if log_callback:
-                    log_callback("refinement_warning",
-                        "WARNING: Refinement response contains input. Using original.")
-                return None, llm_response
+                # Fallback to raw response if no tags found
+                if draft_translation not in full_raw_response:
+                    return full_raw_response.strip(), llm_response
+                else:
+                    if log_callback:
+                        log_callback("refinement_warning",
+                            "WARNING: Refinement response contains input. Using original.")
+                    return None, llm_response
 
-    except (ContextOverflowError, RepetitionLoopError) as e:
-        if log_callback:
-            log_callback("refinement_error", f"Refinement error: {e}")
-        return None, None
+        except RepetitionLoopError as e:
+            # Repetition loop detected - try increasing context (double increase)
+            if context_manager:
+                old_context = context_manager.get_context_size()
+                context_manager.increase_context()
+                context_manager.increase_context()  # Double increase for repetition loops
+                new_context = context_manager.get_context_size()
+
+                if new_context > old_context:
+                    if log_callback:
+                        log_callback("refinement_repetition_retry",
+                            f"🔄 Refinement repetition loop! Increasing context from {old_context} to {new_context} tokens")
+                    continue  # Retry with larger context
+
+            # No context manager or can't increase further
+            if log_callback:
+                log_callback("refinement_error",
+                    f"⚠️ Refinement repetition loop, cannot recover: {e}")
+            return None, last_response
+
+        except ContextOverflowError as e:
+            # Context overflow - try increasing context
+            if context_manager and context_manager.should_retry_with_larger_context(True, 0):
+                context_manager.increase_context()
+                if log_callback:
+                    log_callback("refinement_overflow_retry",
+                        f"⚠️ Refinement context overflow! Retrying with context {context_manager.get_context_size()}")
+                continue  # Retry with larger context
+
+            # Can't increase further
+            if log_callback:
+                log_callback("refinement_error",
+                    f"⚠️ Refinement context overflow, cannot recover: {e}")
+            return None, last_response
 
 
 async def refine_chunks(
