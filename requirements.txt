@@ -4,7 +4,8 @@ httpx>=0.25.0
 
 # LLM API clients
 openai>=1.6.0
-anthropicai>=0.18.0
+# Note: the correct package name is 'anthropic', not 'anthropicai'
+anthropic>=0.18.0
 google-generativeai>=0.3.0
 
 # Document parsing
